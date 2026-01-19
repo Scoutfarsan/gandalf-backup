@@ -1,0 +1,7 @@
+*.env
+*.conf
+/etc/gandalf/*
+/var/backups/*
+*.log
+.DS_Store
+*.swp
