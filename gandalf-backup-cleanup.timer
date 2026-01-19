@@ -1,0 +1,11 @@
+[Unit]
+Description=Gandalf nightly cleanup (silent unless failure)
+
+[Timer]
+OnCalendar=*-*-* 23:15:00
+Persistent=true
+RandomizedDelaySec=15m
+AccuracySec=1m
+
+[Install]
+WantedBy=timers.target

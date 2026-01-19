@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Shared config (same env file as backup)
+RCLONE_CONFIG="${RCLONE_CONFIG:-/etc/gandalf/rclone.conf}"
+RCLONE_REMOTE="${RCLONE_REMOTE:-gdrive:backups/$(hostname -s)}"
+REMOTE_RETENTION_DAYS="${REMOTE_RETENTION_DAYS:-5}"
+LOCAL_TMP_DIR="${LOCAL_TMP_DIR:-/var/backups/gandalf/.tmp}"
+LOCAL_ROOT_DIR="${LOCAL_ROOT_DIR:-/var/backups/gandalf}"
+
+# ntfy (only on failure)
+NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
+NTFY_TOPIC="${NTFY_TOPIC:-}"
+NTFY_TOKEN="${NTFY_TOKEN:-}"
+NTFY_PREFIX="${NTFY_PREFIX:-}"
+
+ts(){ date "+%Y-%m-%d %H:%M:%S %Z"; }
+log(){ echo "[$(ts)] $*"; }
+
+ntfy_fail() {
+  local text="$*"
+  [[ -n "${NTFY_TOPIC:-}" ]] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  local url="${NTFY_URL%/}/${NTFY_TOPIC}"
+  local auth=()
+  [[ -n "${NTFY_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer ${NTFY_TOKEN}")
+  curl -fsS "${auth[@]}" \
+    -H "Title: Gandalf" \
+    -H "Priority: 5" \
+    -H "Tags: broom,warning" \
+    -H "X-Deduplication-Id: gandalf-backup-cleanup-fail" \
+    --data "${NTFY_PREFIX} Cleanup FAIL: ${text}" \
+    "$url" >/dev/null || true
+}
+
+cleanup_local() {
+  # Always: keep local footprint minimal
+  install -d -m 0750 -o root -g adm "$LOCAL_TMP_DIR"
+
+  local c_log=0 c_pipe=0 c_locpartial=0
+  c_log="$(find "$LOCAL_TMP_DIR" -maxdepth 1 -type f -name "*.log" -mmin +1440 -print -delete 2>/dev/null | wc -l || true)"
+  c_pipe="$(find "$LOCAL_TMP_DIR" -maxdepth 1 -type p -mmin +120  -print -delete 2>/dev/null | wc -l || true)"
+  c_locpartial="$(find "$LOCAL_ROOT_DIR" -type f -name "*.partial" -print -delete 2>/dev/null | wc -l || true)"
+
+  echo "$c_log $c_pipe $c_locpartial"
+}
+
+cleanup_remote() {
+  command -v rclone >/dev/null 2>&1 || { echo "ERROR: rclone missing"; return 2; }
+  [[ -r "$RCLONE_CONFIG" ]] || { echo "ERROR: RCLONE_CONFIG not readable: $RCLONE_CONFIG"; return 2; }
+
+  # 1) remove unfinished
+  local c_partial=0 c_old_tgz=0 c_old_log=0
+  c_partial="$(RCLONE_CONFIG="$RCLONE_CONFIG" rclone lsf "$RCLONE_REMOTE" --include "*.partial" 2>/dev/null | wc -l || true)"
+  RCLONE_CONFIG="$RCLONE_CONFIG" rclone delete "$RCLONE_REMOTE" --include "*.partial" --log-level ERROR >/dev/null 2>&1 || true
+
+  # 2) retention
+  c_old_tgz="$(RCLONE_CONFIG="$RCLONE_CONFIG" rclone lsf "$RCLONE_REMOTE" --include "*.tar.gz" --min-age "${REMOTE_RETENTION_DAYS}d" 2>/dev/null | wc -l || true)"
+  c_old_log="$(RCLONE_CONFIG="$RCLONE_CONFIG" rclone lsf "$RCLONE_REMOTE" --include "*.log"    --min-age "${REMOTE_RETENTION_DAYS}d" 2>/dev/null | wc -l || true)"
+
+  RCLONE_CONFIG="$RCLONE_CONFIG" rclone delete "$RCLONE_REMOTE" --min-age "${REMOTE_RETENTION_DAYS}d" --include "*.tar.gz" --log-level ERROR >/dev/null 2>&1 || true
+  RCLONE_CONFIG="$RCLONE_CONFIG" rclone delete "$RCLONE_REMOTE" --min-age "${REMOTE_RETENTION_DAYS}d" --include "*.log"    --log-level ERROR >/dev/null 2>&1 || true
+
+  echo "$c_partial $c_old_tgz $c_old_log"
+}
+
+main() {
+  local lc
+  lc="$(cleanup_local)"
+  local c_log c_pipe c_locpartial
+  c_log="$(awk "{print \$1}" <<<"$lc" 2>/dev/null || echo 0)"
+  c_pipe="$(awk "{print \$2}" <<<"$lc" 2>/dev/null || echo 0)"
+  c_locpartial="$(awk "{print \$3}" <<<"$lc" 2>/dev/null || echo 0)"
+
+  local r_counts
+  if ! r_counts="$(cleanup_remote)"; then
+    ntfy_fail "remote cleanup error (rclone) - see journal"
+    exit 1
+  fi
+
+  local c_rpartial c_rtgz c_rlog
+  c_rpartial="$(awk "{print \$1}" <<<"$r_counts" 2>/dev/null || echo 0)"
+  c_rtgz="$(awk "{print \$2}" <<<"$r_counts" 2>/dev/null || echo 0)"
+  c_rlog="$(awk "{print \$3}" <<<"$r_counts" 2>/dev/null || echo 0)"
+
+  log "CLEANUP: ok local(log>24h=$c_log pipes>120m=$c_pipe partials=$c_locpartial) remote(partial=$c_rpartial old_tgz>${REMOTE_RETENTION_DAYS}d=$c_rtgz old_log>${REMOTE_RETENTION_DAYS}d=$c_rlog)"
+}
+
+main "$@"
