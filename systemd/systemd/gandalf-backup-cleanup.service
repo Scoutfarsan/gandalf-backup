@@ -1,0 +1,7 @@
+[Unit]
+Description=Gandalf backup cleanup (retention + tmp)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gandalf-backup-cleanup

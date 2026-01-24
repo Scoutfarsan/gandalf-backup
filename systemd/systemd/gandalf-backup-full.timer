@@ -1,0 +1,7 @@
+[Unit]
+Description=Run full Gandalf backup weekly
+[Timer]
+OnCalendar=Sun *-*-* 05:30
+Persistent=true
+[Install]
+WantedBy=timers.target

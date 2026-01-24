@@ -1,0 +1,8 @@
+[Unit]
+Description=Run incremental Gandalf backup twice daily
+[Timer]
+OnCalendar=*-*-* 10:00
+OnCalendar=*-*-* 21:00
+Persistent=true
+[Install]
+WantedBy=timers.target

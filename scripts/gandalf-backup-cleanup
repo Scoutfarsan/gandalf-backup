@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export RCLONE_CONFIG=/root/.config/rclone/rclone.conf
+
+BASE="gdrive:backups/gandalf"
+FULL="$BASE/full"
+INC="$BASE/inc"
+LOGS="$BASE/logs"
+KEEP_FULL=2
+
+echo "CLEANUP: scan remote"
+
+mapfile -t fulls < <(rclone lsf "$FULL" --files-only --include 'gandalf-*.tar.gz' | sort || true)
+mapfile -t incs  < <(rclone lsf "$INC"  --files-only --include 'gandalf-*-inc.tar.gz' | sort || true)
+
+if ((${#fulls[@]}==0)); then
+  echo "CLEANUP: no full backups found (skip retention)"
+  logger -t gandalf-backup-cleanup "CLEANUP OK"
+  exit 0
+fi
+
+# latest full timestamp (YYYYMMDD-HHMMSS) from filename
+latest_full="${fulls[-1]}"
+latest_ts="$(sed -nE 's/^gandalf-([0-9]{8}-[0-9]{6})\.tar\.gz$/\1/p' <<<"$latest_full")"
+
+# 1) delete old fulls beyond KEEP_FULL
+if ((${#fulls[@]} > KEEP_FULL)); then
+  del_count=$((${#fulls[@]}-KEEP_FULL))
+  for ((i=0; i<del_count; i++)); do
+    f="${fulls[$i]}"
+    echo "CLEANUP: delete old full: $f"
+    rclone deletefile "$FULL/$f" || true
+    rclone deletefile "$LOGS/${f%.tar.gz}.log" || true
+  done
+fi
+
+# 2) delete incremental older than latest full
+if [[ -n "${latest_ts:-}" ]] && ((${#incs[@]} > 0)); then
+  for f in "${incs[@]}"; do
+    its="$(sed -nE 's/^gandalf-([0-9]{8}-[0-9]{6})-inc\.tar\.gz$/\1/p' <<<"$f")"
+    [[ -n "$its" ]] || continue
+    if [[ "$its" < "$latest_ts" ]]; then
+      echo "CLEANUP: delete old inc: $f"
+      rclone deletefile "$INC/$f" || true
+      rclone deletefile "$LOGS/${f%.tar.gz}.log" || true
+    fi
+  done
+fi
+
+# 3) local tmp hygiene
+echo "CLEANUP: local tmp hygiene"
+find /var/backups/gandalf/.tmp -type f -name '*.tmp' -mtime +2 -delete 2>/dev/null || true
+
+echo "CLEANUP OK"
+logger -t gandalf-backup-cleanup "CLEANUP OK"

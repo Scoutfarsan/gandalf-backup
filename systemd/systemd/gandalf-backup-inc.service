@@ -1,0 +1,6 @@
+[Unit]
+Description=Gandalf incremental backup (ALT A)
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gandalf-backup inc

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="${1:-auto}"  # full|inc|auto
+export RCLONE_CONFIG=/root/.config/rclone/rclone.conf
+
+BASE="gdrive:backups/gandalf"
+ROOT="$BASE"
+FULL="$BASE/full"
+INC="$BASE/inc"
+LOGS="$BASE/logs"
+
+latest="$(rclone lsf "$ROOT" --files-only --include 'gandalf-*.tar.gz' | sort | tail -n 1 || true)"
+[[ -n "$latest" ]] || { echo "ROUTE: nothing to move (no tar.gz in root)"; exit 0; }
+
+dest_dir="$FULL"
+new_tar="$latest"
+
+if [[ "$MODE" == "inc" ]]; then
+  dest_dir="$INC"
+  if [[ "$latest" != *-inc.tar.gz ]]; then
+    new_tar="${latest%.tar.gz}-inc.tar.gz"
+  fi
+elif [[ "$MODE" == "full" ]]; then
+  dest_dir="$FULL"
+else
+  # auto: använd suffix om det finns, annars full
+  if [[ "$latest" == *-inc.tar.gz ]]; then dest_dir="$INC"; else dest_dir="$FULL"; fi
+fi
+
+echo "ROUTE: $latest -> $dest_dir/$new_tar"
+rclone moveto "$ROOT/$latest" "$dest_dir/$new_tar"
+
+log="${latest%.tar.gz}.log"
+new_log="${new_tar%.tar.gz}.log"
+
+if rclone lsf "$ROOT" --files-only --include "$log" | grep -qx "$log"; then
+  echo "ROUTE: $log -> $LOGS/$new_log"
+  rclone moveto "$ROOT/$log" "$LOGS/$new_log"
+fi
